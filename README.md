@@ -13,9 +13,7 @@ export PATH="{/path/to/cross-tools}/bin:$PATH"
 上述的命令只是临时设置环境变量，如需永久设置，可通过修改/etc/profile实现；   
 ```sh
 loongarch64-unknown-linux-gnu-gcc --version
-```
-看到如下提示则说明已正确设置  
-![](./imgs/01.png)
+```  
 # 编译FreeRTOS
 
 下载FreeRTOS-loongarch
