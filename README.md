@@ -31,3 +31,5 @@ make all
 ```
 make run
 ```
+# 相关文档
+https://github.com/LoongsonLab-Ecosystem/FreeRTOS_la64.git
