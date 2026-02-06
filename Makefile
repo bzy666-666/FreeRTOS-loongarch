@@ -16,7 +16,9 @@ SRCS_C = app/main.c \
          FreeRTOS-Kernel/tasks.c \
          FreeRTOS-Kernel/uart.c \
          FreeRTOS-Kernel/timers.c \
+         FreeRTOS-Kernel/exception.c \
          FreeRTOS-Kernel/portable/MemMang/heap_4.c
+         
 
 SRCS_S = start.S \
          FreeRTOS-Kernel/portable/GCC/LoongArch64/portASM.S
@@ -37,7 +39,7 @@ $(TARGET): $(OBJS) link.ld
 	$(CC) $(CFLAGS) -c $< -o $@
 
 run: $(TARGET)
-	qemu-system-loongarch64 -M virt -m 128M -nographic -kernel $(TARGET) -d cpu,in_asm -D qemu.log
+	qemu-system-loongarch64 -M virt -m 128M -nographic -kernel $(TARGET) -d cpu,int,in_asm -D qemu.log
 
 debug: $(TARGET)
 	qemu-system-loongarch64 -M virt -m 128M -nographic -kernel $(TARGET) -s -S

@@ -1,23 +1,21 @@
+
 #include "portmacro.h"
 
     .section .text
-    .global xPortStartFirstTask           /* 启动第一个任务 */
-    .global freertos_loongarch_trap_handler /* 唯一的异常入口 */
+    .global xPortStartFirstTask
+    .global freertos_loongarch_trap_handler
     
     .extern pxCurrentTCB
     .extern vTaskSwitchContext
     .extern xTaskIncrementTick
+    .extern exception_handler_ale_panic
 
-/* ================== 宏定义：保存上下文 (保持你写的逻辑，没问题) ================== */
+/* ================== SAVE_CONTEXT (保持不变) ================== */
 .macro SAVE_CONTEXT
-    /* 1. 腾出栈空间: 34 * 8 = 272 bytes */
     addi.d  $sp, $sp, -272
-
-    /* 2. 保存通用寄存器 */
-    st.d    $r1,  $sp, 8*1   /* ra */
-    st.d    $r2,  $sp, 8*2   /* tp */
-    /* r3 (sp) 稍后处理 */
-    st.d    $r4,  $sp, 8*4   /* a0 */
+    st.d    $r1,  $sp, 8*1
+    st.d    $r2,  $sp, 8*2
+    st.d    $r4,  $sp, 8*4
     st.d    $r5,  $sp, 8*5
     st.d    $r6,  $sp, 8*6
     st.d    $r7,  $sp, 8*7
@@ -35,7 +33,7 @@
     st.d    $r19, $sp, 8*19
     st.d    $r20, $sp, 8*20
     st.d    $r21, $sp, 8*21
-    st.d    $r22, $sp, 8*22  /* fp */
+    st.d    $r22, $sp, 8*22
     st.d    $r23, $sp, 8*23
     st.d    $r24, $sp, 8*24
     st.d    $r25, $sp, 8*25
@@ -46,32 +44,27 @@
     st.d    $r30, $sp, 8*30
     st.d    $r31, $sp, 8*31
 
-    /* 3. 保存特殊寄存器 CSR */
     csrrd   $t0, 0x6   /* CSR_ERA */
     st.d    $t0, $sp, 8*32
     csrrd   $t0, 0x1   /* CSR_PRMD */
     st.d    $t0, $sp, 8*33
 
-    /* 4. 将当前的 SP 保存到 TCB 中 */
     la.global $t0, pxCurrentTCB
-    ld.d      $t1, $t0, 0       
-    st.d      $sp, $t1, 0       
+    ld.d      $t1, $t0, 0        
+    st.d      $sp, $t1, 0        
 .endm
 
-/* ================== 宏定义：恢复上下文 (保持你的逻辑) ================== */
+/* ================== RESTORE_CONTEXT (保持不变) ================== */
 .macro RESTORE_CONTEXT
-    /* 1. 从 pxCurrentTCB 获取 SP */
     la.global $t0, pxCurrentTCB
-    ld.d      $t1, $t0, 0       
-    ld.d      $sp, $t1, 0       
+    ld.d      $t1, $t0, 0        
+    ld.d      $sp, $t1, 0        
 
-    /* 2. 恢复特殊寄存器 */
     ld.d      $t0, $sp, 8*33
     csrwr     $t0, 0x1          /* CSR_PRMD */
     ld.d      $t0, $sp, 8*32
     csrwr     $t0, 0x6          /* CSR_ERA */
 
-    /* 3. 恢复通用寄存器 */
     ld.d    $r1,  $sp, 8*1
     ld.d    $r2,  $sp, 8*2
     ld.d    $r4,  $sp, 8*4
@@ -102,75 +95,82 @@
     ld.d    $r29, $sp, 8*29
     ld.d    $r30, $sp, 8*30
     ld.d    $r31, $sp, 8*31
-
-    /* 4. 回收栈空间 */
     addi.d  $sp, $sp, 272
-
-    /* 5. 异常返回 */
     ertn
 .endm
 
-/* ========================================================================== */
-/* 函数：启动第一个任务 */
-/* ========================================================================== */
+/* ================== 启动第一个任务 ================== */
 xPortStartFirstTask:
-    /* 注意：这里直接恢复新任务的上下文，不需要保存旧的 */
-    /* 因为这是 Main 函数跳转过来的单行道 */
     RESTORE_CONTEXT
 
-/* ========================================================================== */
-/* 统一的异常/中断处理入口 */
-/* (这是 start.S 中 EENTRY 指向的地方) */
-/* ========================================================================== */
+/* ================== 异常处理入口 ================== */
 .align 4
 freertos_loongarch_trap_handler:
-    /* 1. 先保存现场！这一步必须最先做，否则寄存器会被破坏 */
+    /* 1. 保存现场 */
     SAVE_CONTEXT
 
-    /* 2. 读取 CSR_ESTAT (0x5) 来判断是谁触发的 */
+    /* 2. 读取 CSR_ESTAT (0x5) */
+    /* 关键：$t0 保存完整值，绝对不要改动它！用于后面的 Timer 判断 */
     csrrd   $t0, 0x5
     
-    /* 3. 分发逻辑 */
-    
-    /* A. 检查 Syscall (Yield) -> ECODE 位 (21:16) 是否为 0xB */
-    srli.d  $t1, $t0, 16
-    andi    $t1, $t1, 0x3F
+    /* 3. 提取 Ecode 到 $t1 (使用 $t1 作为临时变量) */
+    srli.d  $t1, $t0, 16    /* 右移 16 位 */
+    andi    $t1, $t1, 0x3F  /* $t1 现在是 Ecode (0x9, 0xB, etc.) */
+
+    /* ---------------- 分发逻辑 ---------------- */
+
+/* 检查 ADE (Address Error, Ecode=0x8) */
+    li.d    $t2, 0x8
+    beq     $t1, $t2, is_fatal_exception
+    /* A. 检查 ALE (Ecode = 0x9) */
+    li.d    $t2, 0x9
+    beq     $t1, $t2, is_fatal_exception
+
+    /* B. 检查 Syscall/Yield (Ecode = 0xB) */
     li.d    $t2, 0xB
     beq     $t1, $t2, handle_yield
 
-    /* B. 检查 Timer 中断 -> 检查中断标志位 (例如 bit 11, TI) */
+    /* C. 检查 Timer 中断 (位 11) */
+    /* 注意：这里必须使用原始的 $t0 (ESTAT) */
     li.d    $t2, 0x800      /* 1 << 11 */
-    and     $t1, $t0, $t2
-    bnez    $t1, handle_tick
+    and     $t2, $t0, $t2   /* 检查 bit 11 是否置位 */
+    bnez    $t2, handle_tick
 
-    /* 其他未知中断，直接退出恢复 */
-    b       exit_trap
+    /* 未知中断/异常，直接退出 */
+    b       is_fatal_exception
 
-/* --- 处理任务切换 (Syscall) --- */
+/* --- 1. 对齐异常处理 --- */
+is_fatal_exception:
+    /* 强制对齐 SP，防止 printf 再次崩 */
+    bstrins.d $sp, $zero, 3, 0 
+    
+    /* 呼叫 C 语言 panic 函数 */
+    bl      exception_handler_ale_panic
+    
+    /* 死循环 */
+    b       .
+
+/* --- 2. 任务切换处理 (Yield) --- */
 handle_yield:
-    /* 【关键修正】Syscall 触发时，ERA 指向 syscall 指令本身 */
-    /* 我们必须手动将 ERA + 4，否则 ertn 返回后会死循环执行 syscall */
-    ld.d    $t0, $sp, 8*32  /* 从栈里读出保存的 ERA */
-    addi.d  $t0, $t0, 4     /* 跳过当前指令 (4字节) */
-    st.d    $t0, $sp, 8*32  /* 写回栈里 */
+    /* 手动调整 ERA 跳过 syscall 指令 */
+    ld.d    $t0, $sp, 8*32
+    addi.d  $t0, $t0, 4
+    st.d    $t0, $sp, 8*32
 
-    /* 调用 FreeRTOS 切换上下文 */
     bl      vTaskSwitchContext
     b       exit_trap
 
-/* --- 处理定时器中断 (Tick) --- */
+/* --- 3. 定时器处理 (Tick) --- */
 handle_tick:
-    /* 1. 清除定时器中断标志 (CSR_TICLR 0x44) */
+    /* 清除定时器中断标志 (假设是 0x44 TICLR) */
     li.d    $t0, 1
     csrwr   $t0, 0x44 
 
-    /* 2. 告诉 FreeRTOS 时间流逝 */
     bl      xTaskIncrementTick
 
-    /* 3. 如果 xTaskIncrementTick 返回非 0 ($a0/$r4 != 0)，说明需要切换任务 */
+    /* 检查是否需要调度 (返回非0则调度) */
     beq     $r4, $zero, exit_trap
     
-    /* 需要切换 */
     bl      vTaskSwitchContext
     b       exit_trap
 

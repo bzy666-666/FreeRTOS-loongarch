@@ -1,5 +1,6 @@
 #include <stdint.h>
-
+#include <stdarg.h>
+#include "uart.h"
 /* ---------------- 硬件地址定义 ---------------- */
 /* QEMU LoongArch virt 的 UART0 物理地址是 0x1fe001e0 */
 /* 使用 0x9000... 访问物理内存 (Uncached 窗口) */
@@ -86,4 +87,100 @@ int uart_getc(void)
     } else {
         return -1;
     }
+}
+void print_hex(uint64_t val)
+{
+    int i;
+    int started = 0;
+    char buffer[16]; // 64位最大16个hex字符
+    const char *hex_digits = "0123456789abcdef";
+
+    if (val == 0) {
+        uart_putc('0');
+        return;
+    }
+
+    /* 转换为字符 buffer */
+    for (i = 0; i < 16; i++) {
+        buffer[i] = hex_digits[val & 0xF];
+        val >>= 4;
+    }
+
+    /* 倒序输出 (去除前导零，或者你可以选择不去除) */
+    for (i = 15; i >= 0; i--) {
+        if (buffer[i] != '0') started = 1;
+        if (started || i == 0) {
+            uart_putc(buffer[i]);
+        }
+    }
+}
+
+/* 辅助函数：打印十进制整数 */
+void print_dec(int val)
+{
+    char buffer[12];
+    int i = 0;
+    
+    if (val == 0) {
+        uart_putc('0');
+        return;
+    }
+
+    if (val < 0) {
+        uart_putc('-');
+        val = -val;
+    }
+
+    while (val > 0) {
+        buffer[i++] = (val % 10) + '0';
+        val /= 10;
+    }
+
+    while (i > 0) {
+        uart_putc(buffer[--i]);
+    }
+}
+
+/* 极简 printf 实现 */
+void printf(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+
+    while (*fmt) {
+        if (*fmt == '%') {
+            fmt++; // 跳过 '%'
+            switch (*fmt) {
+                case 'd':
+                    print_dec(va_arg(args, int));
+                    break;
+                case 'x': /* 打印 hex，支持 64 位地址 */
+                case 'p': /* 指针也按 hex 打印 */
+                    uart_putc('0'); uart_putc('x');
+                    print_hex(va_arg(args, uint64_t));
+                    break;
+                case 's':
+                    {
+                        char *s = va_arg(args, char *);
+                        while (*s) uart_putc(*s++);
+                    }
+                    break;
+                case 'c':
+                    uart_putc((char)va_arg(args, int));
+                    break;
+                default: /* 不支持的格式，原样打印 */
+                    uart_putc('%');
+                    uart_putc(*fmt);
+                    break;
+            }
+        } else {
+            uart_putc(*fmt);
+            if (*fmt == '\n') {
+                uart_putc('\r'); // 很多终端需要 \n 对应 \r\n
+            }
+        }
+        fmt++;
+    }
+
+    va_end(args);
 }

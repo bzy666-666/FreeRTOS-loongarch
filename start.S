@@ -8,7 +8,7 @@
     
     /* 直接引用 portASM.S 中的总入口 */
     .extern freertos_loongarch_trap_handler
-
+    .align 12
 _start:
     /* 1. 设置栈指针 */
     la.local   $sp, _stack_top
